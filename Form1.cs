@@ -8,20 +8,119 @@ using System.Diagnostics;
 using Memory.Win64;
 using System.IO;
 
+// TODO: Replacing long[,] array for storing cancels with Cancel[] arrays
+// and Implementing better ways to find cancel indexes
+
 namespace TekkenTrainer
 {
     public partial class Form1 : Form
     {
-        class Node
+        class Cancel
+        {
+            public int index;
+            public ulong command;
+            public int requirement_idx;
+            public int extradata_idx;
+            public int frame_window_start;
+            public int frame_window_end;
+            public int starting_frame;
+            public short move_id;
+            public short type;
+
+            public Cancel()
+            {
+                index = requirement_idx = extradata_idx = frame_window_end = frame_window_start = starting_frame = -1;
+                command = 0;
+                move_id = type = -1;
+            }
+
+            public Cancel(ulong cmd, int rq, int ed, int fs, int fe, int sf, short mi, short ty)
+            {
+                index = -1;
+                command = cmd;
+                requirement_idx = rq;
+                extradata_idx = ed;
+                frame_window_start = fs;
+                frame_window_end = fe;
+                starting_frame = sf;
+                move_id = mi;
+                type = ty;
+            }
+
+            public Cancel(int idx, ulong cmd, int rq, int ed, int fs, int fe, int sf, short mi, short ty)
+            {
+                index = idx;
+                command = cmd;
+                requirement_idx = rq;
+                extradata_idx = ed;
+                frame_window_start = fs;
+                frame_window_end = fe;
+                starting_frame = sf;
+                move_id = mi;
+                type = ty;
+            }
+
+            public static bool operator==(Cancel a, Cancel b)
+            {
+                return (
+                    a.index == b.index &&
+                    a.command == b.command &&
+                    a.requirement_idx == b.requirement_idx &&
+                    a.extradata_idx == b.extradata_idx &&
+                    a.frame_window_start == b.frame_window_start &&
+                    a.frame_window_end == b.frame_window_end &&
+                    a.starting_frame == b.starting_frame &&
+                    a.move_id == b.move_id &&
+                    a.type == b.type
+                    );
+            }
+
+            public override bool Equals(object obj)
+            {
+                if (obj == null) return false;
+                if (!(obj is Cancel)) return false;
+                return (
+                    this.index == ((Cancel)obj).index &&
+                    this.command == ((Cancel)obj).command &&
+                    this.requirement_idx == ((Cancel)obj).requirement_idx &&
+                    this.extradata_idx == ((Cancel)obj).extradata_idx &&
+                    this.frame_window_start == ((Cancel)obj).frame_window_start &&
+                    this.frame_window_end == ((Cancel)obj).frame_window_end &&
+                    this.starting_frame == ((Cancel)obj).starting_frame &&
+                    this.move_id == ((Cancel)obj).move_id &&
+                    this.type == ((Cancel)obj).type
+                    );
+            }
+
+            public override int GetHashCode()
+            {
+                return 0;
+            }
+
+            public static bool operator!=(Cancel a, Cancel b)
+            {
+                return (
+                    a.index == b.index &&
+                    a.command != b.command &&
+                    a.requirement_idx != b.requirement_idx &&
+                    a.extradata_idx != b.extradata_idx &&
+                    a.frame_window_start != b.frame_window_start &&
+                    a.frame_window_end != b.frame_window_end &&
+                    a.starting_frame == b.starting_frame &&
+                    a.move_id != b.move_id &&
+                    a.type != b.type
+                    );
+            }
+        }
+        class File_Item
         {
             public string name;
             public ulong[] ptr;
-            public Node()
+            public File_Item()
             {
                 Initialize(string.Empty);
-
             }
-            public Node(string n, ulong[] o = null)
+            public File_Item(string n, ulong[] o = null)
             {
                 Initialize(n, o);
             }
@@ -31,29 +130,29 @@ namespace TekkenTrainer
             }
         }
 
-        class Reqs
+        class Req_Item
         {
             public string name;
-            public int[,] ptr;
-            public Reqs()
+            public List<Node> ptr;
+            public Req_Item()
             {
                 Initialize(string.Empty);
             }
-            public Reqs(string n, int[,] r = null)
+            public Req_Item(string n, List<Node> r = null)
             {
                 Initialize(n, r);
             }
-            public void Initialize(string n, int[,] r = null)
+            public void Initialize(string n, List<Node> r = null)
             {
                 name = n; ptr = r;
             }
         }
 
-        class Node2
+        class Node
         {
             public int index;
             public int value;
-            public Node2(int idx = -1, int val = -1)
+            public Node(int idx = -1, int val = -1)
             {
                 index = idx; value = val;
             }
@@ -95,8 +194,8 @@ namespace TekkenTrainer
             voiceclip_addr = 0x78
         };
 
-        MemoryHelper64 mem = null;
-        ulong baseAddress = 0;
+        static MemoryHelper64 mem = null;
+        public static ulong baseAddress = 0;
         // GAME VERSION: v4.20
 
         // Structure Addresses
@@ -104,15 +203,21 @@ namespace TekkenTrainer
         public static ulong p1profileStruct;
         public static ulong p2profileStruct;
         public static ulong visuals;
+        public static ulong hud_icon_addr;
+        public static ulong motbinOffset;
+        public static ulong p1structsize;
+        public static ulong AllocatedMem;
 
         // Costume Related stuff
-        const string cs_kaz_final = "/Game/Demo/StoryMode/Character/Sets/CS_KAZ_final.CS_KAZ_final";
-        const string cs_hei_final = "/Game/Demo/StoryMode/Character/Sets/CS_HEI_final.CS_HEI_final";
-        const string cs_mrx_final = "/Game/Demo/StoryMode/Character/Sets/CS_MRX_final.CS_MRX_final";
+        static readonly string cs_kaz_final = "/Game/Demo/StoryMode/Character/Sets/CS_KAZ_final.CS_KAZ_final";
+        static readonly string cs_hei_final = "/Game/Demo/StoryMode/Character/Sets/CS_HEI_final.CS_HEI_final";
+        static readonly string cs_mrx_final = "/Game/Demo/StoryMode/Character/Sets/CS_MRX_final.CS_MRX_final";
 
-        readonly List<Node> fileData = new List<Node>();
-        readonly List<Reqs> requirements = new List<Reqs>();
-        bool IsRunning = false; // Variable to check if the game is running or not
+        static readonly List<File_Item> fileData = new List<File_Item>();
+        static readonly Req_Item[] requirements = new Req_Item[5];
+        static bool IsRunning = false; // Variable to check if the game is running or not
+        static readonly byte[] ORG_INST = { 0x4C, 0x8B, 0x6C, 0x24, 0x68 }; // mov r13, [rsp+68]
+        static byte[] BYTES_READ = { 0, 0, 0, 0, 0 }; // mov r13, [rsp+68]
         public Form1()
         {
             InitializeComponent();
@@ -228,7 +333,7 @@ namespace TekkenTrainer
         }
 
         // For bringing Forward instructions 
-        private void button3_Click(object sender, EventArgs e)
+        private void Button3_Click(object sender, EventArgs e)
         {
             panel_instructions.BringToFront();
             panel_instructions.Visible = true;
@@ -236,11 +341,16 @@ namespace TekkenTrainer
         }
 
         // For going back to main menu
-        private void button_back_Click(object sender, EventArgs e)
+        private void Button_Black_Click(object sender, EventArgs e)
         {
             Panels_Visibility(false);
         }
 
+        // For Cross button
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            CloseProgram();
+        }
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////
         /// MAIN THREADS
@@ -277,7 +387,6 @@ namespace TekkenTrainer
                 Thread.Sleep(100);
                 if (process != null) continue; // If Process already found and attached to, then keep running.
                 c2 = 0;
-                c3 = 0;
                 process = null;
                 try { process = Process.GetProcessesByName("TekkenGame-Win64-Shipping")[0]; }
                 catch (Exception ex)
@@ -290,18 +399,9 @@ namespace TekkenTrainer
                     if (process.Id < 0) // An Error Occured Attaching to Process
                     {
                         if (c1 == 0) AppendTextBox("\r\nFailed to attach to process.");
-                        c1 += 1; Thread.Sleep(1000);
+                        c1 += 1; Thread.Sleep(500);
                     }
-                    else if (process.Id == 0) // Game not found running
-                    {
-                        if (c1 == 0) {
-                            ClearTextBox("");
-                            AppendTextBox("TEKKEN 7 Not Running. Please Run the Game");
-                        }
-                        c1 += 1; Thread.Sleep(1000);
-                        process = null;
-                        continue;
-                    }
+                    ulong[] list;
                     // Process Successfully Found
                     if (mem == null) mem = new MemoryHelper64(process);
                     else mem.SetProcess(process);
@@ -309,15 +409,17 @@ namespace TekkenTrainer
                     baseAddress = mem.GetBaseAddress();
                     ClearTextBox("");
                     AppendTextBox("Attached to the game\r\nFinding Visuals Address...");
-                    visuals = mem.OffsetCalculator(FindInList("visuals"));
-                    if (visuals == 0)
+                    list = FindInList("visuals");
+                    // Looping to find the address
+                    while(true)
                     {
-                        process = null; mem.SetProcess(null);
-                        continue; // Loop Back if unable to read the address
+                        visuals = mem.OffsetCalculator(list);
+                        if (visuals != 0) break;
+                        Thread.Sleep(500);
                     }
                     AppendTextBox("Found!\r\nFinding Player 1 Profile Address...");
                     // Finding P1 Profile Structure Address
-                    ulong[] list = FindInList("p1profile");
+                    list = FindInList("p1profile");
                     if (list == null) // In case of an error
                     {
                         MessageBox.Show("An Error occured Reading P1 Profile Address from \"addresses.txt\". \nClosing Program.");
@@ -326,7 +428,7 @@ namespace TekkenTrainer
                     }
                     while (true) // Loop to find the said address
                     {
-                        Thread.Sleep(1000);
+                        Thread.Sleep(500);
                         p1profileStruct = mem.OffsetCalculator(list);
                         if (p1profileStruct == 0)   // Address Not Found
                         {
@@ -338,7 +440,7 @@ namespace TekkenTrainer
                                     ClearTextBox("");
                                     AppendTextBox("TEKKEN 7 Not Running. Please Run the Game\r\n");
                                 }
-                                c2++; Thread.Sleep(1000);
+                                c2++; Thread.Sleep(500);
                                 break;  // Breaking the loop so program can loop back to attach to game
                             }
                         }
@@ -356,7 +458,7 @@ namespace TekkenTrainer
                     list[2] = 0x8;
                     while (true)
                     {
-                        Thread.Sleep(1000);
+                        Thread.Sleep(500);
                         p2profileStruct = mem.OffsetCalculator(list);
                         if (p2profileStruct == 0)   // Address Not Found
                         {
@@ -368,15 +470,37 @@ namespace TekkenTrainer
                             {
                                 ClearTextBox("");
                                 AppendTextBox("Could not find TEKKEN 7. Please Run the Game\r\n");
-                                c3++; Thread.Sleep(1000);
+                                c3++; Thread.Sleep(500);
                                 break;  // Breaking the loop so program can loop back to attach to game
                             }
                         }
                         else break; // Address Successfully Found
                     }
                     if (c3 >= 1) continue;  // If Address not found then Loop back
-                    AppendTextBox("Found!\r\nStarting Script\r\n");
+                    AppendTextBox("Found!\r\n");
+                    try
+                    {
+                        motbinOffset = FindInList("movesetOffset")[0];
+                        p1struct = FindInList("p1struct")[0];
+                        p1structsize = FindInList("p1structsize")[0];
+                        list = FindInList("hud_icon_addr");
+                        if (list != null)
+                            hud_icon_addr = mem.GetBaseAddress() + list[0];
+                    }
+                    catch (Exception ex)
+                    {
+                        if ((uint)ex.HResult == 0x80004003)
+                        {
+                            MessageBox.Show("Addresses not found in the addresses.txt file\nClosing Program!.");
+                            CloseProgram();
+                        }
+                        else throw ex;
+                    }
+                    CreateCodeCave();
+                    AppendTextBox("Starting Script\r\n");
                     BossThreadLoop();
+                    // Program will reach this portion ONLY if the game gets closed, so freeing memory
+                    mem.VirtualFreeMemory(AllocatedMem);
                     mem.SetProcess(null);
                     process = null;
                 }
@@ -384,8 +508,6 @@ namespace TekkenTrainer
                 {
                     ClearTextBox("");
                     AppendTextBox("Could not find TEKKEN 7. Please Run the Game\r\n");
-                    //MessageBox.Show("No Process Found After Searching\nApplication Quitting.");
-                    //CloseProgram(); return;
                 }
             }
         }
@@ -415,7 +537,7 @@ namespace TekkenTrainer
             {
                 Costume(side, 4, cs_mrx_final);
             }
-            else if (charID == 26 && (GetCostumeID(side) == 13 || GetCostumeID(side) == 0)) // Preset 0 or 7
+            else if (charID == 26 && GetCostumeID(side) == 13) // Preset 0 or 7
             {
                 Thread.Sleep(200);
                 LoadCharacter(side, 27);  // Load Devil Kazumi
@@ -435,8 +557,8 @@ namespace TekkenTrainer
             {
                 Thread.Sleep(10);
                 gameMode = GameMode();
-                if (gameMode == 3 || gameMode == 4 || gameMode == 15) continue;
-                else if (gameMode == 6)    // If in versus mode
+                if (gameMode == 3 || gameMode == 15) continue;
+                else if (gameMode == 4 || gameMode == 6)    // Vs mode and Player Match
                 {
                     Costumes(0);
                     Costumes(1);
@@ -475,14 +597,10 @@ namespace TekkenTrainer
         {
             if (!IsRunning) return false;
             bool Result = false;
-            bool Load = false;
             int charID = GetCharID(MOVESET);
             if (charID == 09)
             {
-                if (Checkbox_Get(6) && GetCostumeID(side) == 4) Load = true;
-                else if (!Checkbox_Get(6)) Load = true;
-                else Load = false;
-                if (Load)
+                if ((!Checkbox_Get(6)) || (GetCostumeID(side) == 4))
                 {
                     Result = DVKCancelRequirements(MOVESET);
                     Checkbox_Set(1, Result);
@@ -490,10 +608,7 @@ namespace TekkenTrainer
             }
             else if (charID == 08)
             {
-                if (Checkbox_Get(6) && GetCostumeID(side) == 4) Load = true;
-                else if (!Checkbox_Get(6)) Load = true;
-                else Load = false;
-                if (Load)
+                if ((!Checkbox_Get(6)) || (GetCostumeID(side) == 4))
                 {
                     Result = ASHCancelRequirements(MOVESET);
                     Checkbox_Set(2, Result);
@@ -501,10 +616,7 @@ namespace TekkenTrainer
             }
             else if (charID == 32)
             {
-                if (Checkbox_Get(6) && GetCostumeID(side) == 4) Load = true;
-                else if (!Checkbox_Get(6)) Load = true;
-                else Load = false;
-                if (Load)
+                if ((!Checkbox_Get(6)) || (GetCostumeID(side) == 4))
                 {
                     Result = SHACancelRequirements(MOVESET);
                     Checkbox_Set(3, Result);
@@ -526,22 +638,6 @@ namespace TekkenTrainer
         
         private ulong GetMovesetAddress(int side)
         {
-            bool Error = false;
-            ulong p1struct = 0, motbinOffset = 0, p1structsize = 0;
-            if (FindInList("p1struct") != null) p1struct = FindInList("p1struct")[0];
-            else Error = true;
-            if (FindInList("movesetOffset") != null) motbinOffset = FindInList("movesetOffset")[0];
-            else Error = true;
-            if (FindInList("p1structsize") != null) p1structsize = FindInList("p1structsize")[0];
-            else Error = true;
-            if (p1struct == 0) Error = true;
-            if (motbinOffset == 0) Error = true;
-            if (p1structsize == 0) Error = true;
-            if (Error)
-            {
-                AppendTextBox("Error While Reading Moveset Address\r\n");
-                return 0;
-            }
             return mem.ReadMemory<ulong>(baseAddress + p1struct + motbinOffset + ((ulong)side * p1structsize));
         }
         private void Costume(int side, int value, string costume)
@@ -554,8 +650,8 @@ namespace TekkenTrainer
 
         private bool DVKCancelRequirements(ulong MOVESET)
         {
-            int[,] reqs = FindInReqList("KAZUYA");
-            if(!RemoveRequirements(MOVESET, reqs)) return false;
+            //int req_idx_df2 = FindReqIdx(MOVESET, new int[] { 563, 7, 225, 1, 634, 0, 361, 1, 0x81C8, 6, 881, 0 }, 3000);
+            if(!RemoveRequirements(MOVESET, FindInReqList("KAZUYA"))) return false;
 
             int Co_Dummy_00 = GetMoveID(MOVESET, "Co_Dummy_00\0", 563);
             int Co_Dummy_00_cancel_idx = GetMoveAttributeIndex(MOVESET, Co_Dummy_00, (int)Offsets.cancel_addr);
@@ -565,16 +661,27 @@ namespace TekkenTrainer
             if (Kz_vipLP < 0) return false;
             int Kz_majin_00 = GetMoveID(MOVESET, "Kz_majin_00\0", 1400);
             if (Kz_majin_00 < 0) return false;
+            int Kz_RageArts00 = GetMoveID(MOVESET, "Kz_RageArts00\0", 2000);
+            if (Kz_RageArts00 < 0) return false;
+
             // Writing into group cancel for Ultimate Rage Art
-            long[,] arr = new long[,]
+            Cancel RA_Cancel = new Cancel(0x4000000300000008, -1, 14, 1, 32767, 1, (short)Kz_RageArts00, 80);
+            Cancel RA_Cancel2 = new Cancel(0x4000000300000008, -1, 14, 1, 1, 1, (short)Kz_RageArts00, 80);
+            Cancel RA_Cancel3 = new Cancel(0x4000000300000008, -1, 14, 1, 1, 1, (short)Kz_RageArts00, 80);
+            FindCancelIndex(MOVESET, ref RA_Cancel, 1, 1500);
+            FindCancelIndex(MOVESET, ref RA_Cancel2, 0, 7349); // Fed old cancel index - 400 in there
+            FindCancelIndex(MOVESET, ref RA_Cancel3, 0, RA_Cancel2.index+1);
+            RA_Cancel.move_id = RA_Cancel2.move_id = RA_Cancel3.move_id = (short)Co_Dummy_00;
+            //Debug.WriteLine("Index = " + FindCancelIndex(MOVESET, ToFind, 1, 1500).ToString());
+            Cancel[] array = 
             {
-                {1720, -1, -1, -1, -1, -1, -1, Co_Dummy_00, -1} // 1566 + 154 // 1566 + 154
+                RA_Cancel
             };
-            if (!Edit_Cancels(MOVESET, arr, 1)) return false;
+            if (!Edit_Cancels(MOVESET, array, 1)) return false;
 
             int[] arr1 = new int[]
             {
-                GetMoveID(MOVESET, "Kz_RageArts00\0", 1400), // To, From is fixed to Co_Dummy_00 (838)
+                Kz_RageArts00, // To, From is fixed to Co_Dummy_00 (838)
             	Kz_majin_00,
                 Kz_vipLP
             };
@@ -584,38 +691,53 @@ namespace TekkenTrainer
             if (!CopyMoves(MOVESET, arr1, Co_Dummy_00)) return false;
 
             int ind1 = Co_Dummy_00_cancel_idx; // Cancel list index for Co_Dummy_00
-            long[,] cancel_list = new long[,]
+            int Kz_sKAM00_ = GetMoveID(MOVESET, "Kz_sKAM00_\0", 1400);
+            
+            Cancel[] cancels_list =
             {
 		        // For Ultimate Rage Art
-		        {ind1++, 0, 0, 11, 1, 1, 1, GetMoveID(MOVESET, "SKz_RageArts01Treasure_7CS\0", 2000), 65},
-                {ind1++, 0x8000, 0, 0, 0, 0, 0, 32769, 336},
+		        new Cancel(ind1++, 0, 0, 11, 1, 1, 1, (short)GetMoveID(MOVESET, "SKz_RageArts01Treasure_7CS\0", 2000), 65),
+                new Cancel(ind1++, 0x8000, 0, 0, 0, 0, 0, (short)Kz_sKAM00_, 336),
 		        // For d/f+2,1 cancel
-                {ind1++, 0, FindIndInList("KAZUYA",-1) + 4, 52, 23, 23, 23, Kz_vipLP, 65}, // 3555 + 4
-                {ind1++, 0, FindIndInList("KAZUYA",-2), 23, 1, 32767, 1, 32769, 257}, // 3516
-                {ind1++, 0, FindIndInList("KAZUYA",-3), 23, 1, 32767, 1, 32769, 257}, // 3410
-                {ind1++, 0x8000, 0, 0, 46, 32767, 46, 32769, 336},
+                new Cancel(ind1++, 0, FindIndexInList("KAZUYA",-1) + 4, 52, 23, 23, 23, (short)Kz_vipLP, 65), // 3555 + 4
+                new Cancel(ind1++, 0, FindIndexInList("KAZUYA",-2), 23, 1, 32767, 1, (short)Kz_sKAM00_, 257), // 3516
+                new Cancel(ind1++, 0, FindIndexInList("KAZUYA",-3), 23, 1, 32767, 1, (short)Kz_sKAM00_, 257), // 3410
+                new Cancel(ind1++, 0x8000, 0, 0, 46, 32767, 46, (short)Kz_sKAM00_, 336),
 		        // For f+1+2,2 cancel
-		        {ind1++, 0, FindIndInList("KAZUYA",-4), 23, 1, 32767, 1, 32769, 257}, // 1882
-                {ind1++, 0, FindIndInList("KAZUYA",-5), 11, 1, 32767, 1, Kz_vipLP+1, 65}, // 3191
-                {ind1++, 0, 0, 16, 32, 32, 32, GetMoveID(MOVESET, "Kz_bdyTuki\0", 1400), 65},
-                {ind1++, 0x8000, 0, 0, 58, 32767, 58, 32769, 336},
+		        new Cancel(ind1++, 0, FindIndexInList("KAZUYA",-4), 23, 1, 32767, 1, (short)Kz_sKAM00_, 257), // 1882
+                new Cancel(ind1++, 0, FindIndexInList("KAZUYA",-5), 11, 1, 32767, 1, (short)(Kz_vipLP+1), 65), // 3191
+                new Cancel(ind1++, 0, 0, 16, 32, 32, 32, (short)GetMoveID(MOVESET, "Kz_bdyTuki\0", 1400), 65),
+                new Cancel(ind1++, 0x8000, 0, 0, 58, 32767, 58, (short)Kz_sKAM00_, 336),
 		        // For f+1+2,2 cancel (blending)
-		        {GetMoveAttributeIndex(MOVESET, Kz_vipLP, (int)Offsets.cancel_addr) + 8, 0x4000000200000000, 0, 11, 1, 24, 24, Co_Dummy_00 + 2, 80},
-		        // For d/f+2,1 cancel (blending)
-		        {GetMoveAttributeIndex(MOVESET, Kz_majin_00, (int)Offsets.cancel_addr) + 8, 0x4000000100000000, 0, 11, 1, 13, 13, Co_Dummy_00 + 1, 80},
+		        new Cancel(GetMoveAttributeIndex(MOVESET, Kz_vipLP, (int)Offsets.cancel_addr) + 8, 0x4000000200000000, 0, 11, 1, 24, 24, (short)(Co_Dummy_00 + 2), 80),
+		        // For d/f+1 into Ultimate RA
+                RA_Cancel2,
+                // For d/f+2 into Ultimate RA
+                RA_Cancel3,
+                // For d/f+2,1 cancel (blending)
+                new Cancel(GetMoveAttributeIndex(MOVESET, Kz_majin_00, (int)Offsets.cancel_addr) + 8, 0x4000000100000000, 0, 11, 1, 13, 13, (short)(Co_Dummy_00 + 1), 80),
 		        // For Stopping Story Rage Art from Coming out (cancel list: 10177, entry 2)
-		        {GetMoveAttributeIndex(MOVESET, GetMoveID(MOVESET, "SKz_RageArts_sp_nRv3\0", 2000), (int)Offsets.cancel_addr) + 1, -1, FindIndInList("KAZUYA",-6), -1, -1, -1, -1, -1, -1} // 3624
+		        new Cancel(GetMoveAttributeIndex(MOVESET, GetMoveID(MOVESET, "SKz_RageArts_sp_nRv3\0", 2000), (int)Offsets.cancel_addr) + 1, 0, FindIndexInList("KAZUYA",-6), -1, -1, -1, -1, -1, -1) // 3624
+            
             };
 
             // Updating cancel lists
-            if (!Edit_Cancels(MOVESET, cancel_list, 0)) return false;
+            if (!Edit_Cancels(MOVESET, cancels_list, 0)) return false;
 
             // Adjusting cancel lists
-            reqs = new int[,]
+            int[,] reqs = new int[,]
             {
                 {Co_Dummy_00+1, Co_Dummy_00_cancel_idx + 2} // Co_Dummy_02 (839), Index number to be assigned
             };
             if (!AssignMoveAttributeIndex(MOVESET, reqs, (int)OFFSETS.cancel_list)) return false;
+
+            // Checking if Hit Conditions needs changes or not
+            ulong addr = GetMoveAttributeAddress(MOVESET, Kz_vipLP, (int)Offsets.hit_cond_addr);
+            addr = mem.ReadMemory<ulong>(addr); // This will get the requirement address
+            if (mem.ReadMemory<int>(addr) != 563)
+            {
+                return true;
+            }
 
             reqs = new int[,]
             {
@@ -629,25 +751,41 @@ namespace TekkenTrainer
         private bool ASHCancelRequirements(ulong MOVESET)    // Ascended Heihachi requirements
         {
             // Editing requirements
-            int[,] reqs = FindInReqList("HEIHACHI");
-            if (!RemoveRequirements(MOVESET, reqs)) return false;
+            if (!RemoveRequirements(MOVESET, FindInReqList("HEIHACHI"))) return false;
 
             int Co_Dummy_00 = GetMoveID(MOVESET, "Co_Dummy_00\0", 800);
             int Co_Dummy_00_cancel_idx = GetMoveAttributeIndex(MOVESET, Co_Dummy_00, (int)Offsets.cancel_addr);
             if (Co_Dummy_00 < 0) return true; // Already written
-
+            int He_RageArts00 = GetMoveID(MOVESET, "He_RageArts00\0", 1600);
+            int He_WK00F_7CS = GetMoveID(MOVESET, "He_WK00F_7CS\0", 1600);
+            int He_sKAM00_ = GetMoveID(MOVESET, "He_sKAM00_\0", 1400);
+            Cancel RAI_Cancel = new Cancel(0x4000000C00000020, 0, 14, 1, 32767, 1, (short)GetMoveID(MOVESET, "He_lk00\0", 1400), 80);
+            Cancel RA_Cancel = new Cancel(0x4000000300000004, -1, 14, 1, 32767, 1, (short)He_RageArts00, 80);
+            Cancel RA_Cancel2 = new Cancel(0x4000000300000004, -1, 14, 1, 1, 1, (short)He_RageArts00, 80);
+            Cancel RA_Cancel3 = new Cancel(0x4000000300000004, -1, 14, 1, 1, 1, (short)He_RageArts00, 80);
+            FindCancelIndex(MOVESET, ref RAI_Cancel, 1, 750);
+            RAI_Cancel.move_id = (short)He_WK00F_7CS;
+            FindCancelIndex(MOVESET, ref RA_Cancel, 1, 1400);
+            FindCancelIndex(MOVESET, ref RA_Cancel2, 0, 7775);
+            FindCancelIndex(MOVESET, ref RA_Cancel3, 0, RA_Cancel2.index+1);
+            RA_Cancel.move_id = RA_Cancel2.move_id = RA_Cancel3.move_id = (short)Co_Dummy_00;
             // Writing into group cancels
-            long[,] arr = new long[,]
+            Cancel[] cancels =
             {
-                {899, -1, -1, -1, -1, -1, -1, GetMoveID(MOVESET, "He_WK00F_7CS\0", 1600), -1},
-                {1674, -1, -1, -1, -1, -1, -1, Co_Dummy_00, -1}  //(1541 + 133)
+                RAI_Cancel, RA_Cancel
             };
-            if (!Edit_Cancels(MOVESET, arr, 1)) return false;
+
+            //long[,] arr = new long[,]
+            //{
+            //    {899, -1, -1, -1, -1, -1, -1, He_WK00F_7CS, -1}, // 892 + 7
+            //    {1673, -1, -1, -1, -1, -1, -1, Co_Dummy_00, -1}  // 1541 + 132
+            //};
+            if (!Edit_Cancels(MOVESET, cancels, 1)) return false;
 
             // This array is for copying moves
-            int[] arr1 = new int[]
+            int[] arr1 = 
             {
-                GetMoveID(MOVESET, "He_RageArts00\0", 1600) // He_RageArt00
+                He_RageArts00 // He_RageArt00
             };
 
             if (!CopyMoves(MOVESET, arr1, Co_Dummy_00)) return false;
@@ -661,49 +799,53 @@ namespace TekkenTrainer
             if (ind2 < 0) return false;
             // Updating cancel lists
             // {index, command, req_idx, ext_idx, w_start, w_end, starting_frame, move, option}
-            arr = new long[,]
+            Cancel[] arr = 
             {
                 // For Ultimate Rage Art
-		        {ind1++, 0, 0, 11, 7, 7, 7, GetMoveID(MOVESET,"He_RageArts01_Treasure_7CS\0", 1600), 65},
-                {ind1++, 0x8000, 0, 0, 0, 0, 0, 32769, 336},
+		        new Cancel(ind1++, 0, 0, 11, 7, 7, 7, (short)GetMoveID(MOVESET,"He_RageArts01_Treasure_7CS\0", 1600), 65),
+                new Cancel(ind1++, 0x8000, 0, 0, 0, 0, 0, (short)He_sKAM00_, 336),
 		        // For Spinning Demon (kick 1)
-		        {ind1++, 0x4000000100000000, 0, 11, 1, 15, 15, GetMoveID(MOVESET,"He_m_k00AG\0", 1600), 80},
-                {ind1++, 0x400000080000004E, 0, 16, 1, 16, 16, He_m_k01M_CS, 80},
-                {ind1++, 0x4000000800000000, 0, 11, 1, 15, 15, GetMoveID(MOVESET,"He_m_k00DG\0", 1600), 80},
-                {ind1++, 0x8000, 0, 0, 49, 32767, 49, 32769, 336},
+		        new Cancel(ind1++, 0x4000000100000000, 0, 11, 1, 15, 15, (short)GetMoveID(MOVESET,"He_m_k00AG\0", 1600), 80),
+                new Cancel(ind1++, 0x400000080000004E, 0, 16, 1, 16, 16, (short)He_m_k01M_CS, 80),
+                new Cancel(ind1++, 0x4000000800000000, 0, 11, 1, 15, 15, (short)GetMoveID(MOVESET,"He_m_k00DG\0", 1600), 80),
+                new Cancel(ind1++, 0x8000, 0, 0, 49, 32767, 49, (short)He_sKAM00_, 336),
 		        // For Spinning Demon (kick 2)
-		        {ind1++, 0x400000080000004E, 0, 16, 1, 24, 24, He_m_k02M_CS, 80},
-                {ind1++, 0x4000000100000000, 0, 11, 1, 16, 16, GetMoveID(MOVESET,"He_m_k01MAG\0", 1600), 80},
-                {ind1++, 0x4000000800000020, 0, 11, 1, 23, 23, GetMoveID(MOVESET,"He_m_k01MDG\0", 1600), 80},
-                {ind1++, 0x8000, 0, 0, 59, 32767, 59, 32769, 336},
-		        // For Spinning Demon (kick 3)
-		        {ind2 + 0, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 + 1, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 + 2, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80},
+		        new Cancel(ind1++, 0x400000080000004E, 0, 16, 1, 24, 24, (short)He_m_k02M_CS, 80),
+                new Cancel(ind1++, 0x4000000100000000, 0, 11, 1, 16, 16, (short)GetMoveID(MOVESET,"He_m_k01MAG\0", 1600), 80),
+                new Cancel(ind1++, 0x4000000800000020, 0, 11, 1, 23, 23, (short)GetMoveID(MOVESET,"He_m_k01MDG\0", 1600), 80),
+                new Cancel(ind1++, 0x8000, 0, 0, 59, 32767, 59, (short)He_sKAM00_, 336),
+		        // D+1 to Ultimate RA
+                RA_Cancel2,
+                // D+2 to Ultimate RA
+                RA_Cancel3,
+                // For Spinning Demon (kick 3)
+		        new Cancel(ind2 + 0, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 + 1, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 + 2, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80),
 		        // For Spinning Demon (kick 4)
-		        {ind2 + 4, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 + 5, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 + 6, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80},
+		        new Cancel(ind2 + 4, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 + 5, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 + 6, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80),
 		        // For Spinning Demon (kick 5)
-		        {ind2 + 8, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 + 9, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 +10, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80},
+		        new Cancel(ind2 + 8, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 + 9, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 +10, 0x400000080000004e, 0, -1, 1, -1, -1, -1, 80),
 		        // For Spinning Demon (kick 6)
-		        {ind2 +12, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80},
-                {ind2 +13, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80},
+		        new Cancel(ind2 +12, 0x4000000100000000, 0, -1, 1, -1, -1, -1, 80),
+                new Cancel(ind2 +13, 0x4000000800000020, 0, -1, 1, -1, -1, -1, 80),
 		        // From Regular Spinning Demon to boss version
-		        {ind2 +15, -1, 0, -1, -1, -1, -1, -1, -1}
+		        new Cancel(ind2 +15, 0, 0, -1, -1, -1, -1, -1, -1)
             };
             if (!Edit_Cancels(MOVESET, arr, 0)) return false;
 
-            reqs = new int[,]
+            int[,] reqs = new int[,]
             {
                 {GetMoveID(MOVESET,"He_m_k00_CS\0", 1600), Co_Dummy_00_cancel_idx + 2}, // For Spinning Demon Kick 1, 4244
 		        {He_m_k01M_CS, Co_Dummy_00_cancel_idx + 6}  // For Spinning Demon Kick 2, 4248
             };
             if (!AssignMoveAttributeIndex(MOVESET, reqs, (int)OFFSETS.cancel_list)) return false;
 
-            if (!HeihachiAura(MOVESET, GetMoveAttributeIndex(MOVESET, GetMoveID(MOVESET, "He_sFUN00_", 1200), (int)Offsets.ext_prop_addr))) return false;
+            if (!HeihachiAura(MOVESET, GetMoveAttributeAddress(MOVESET, (short)He_sKAM00_+1, (int)Offsets.ext_prop_addr))) return false;
 
             return true; // Successfully Written
         }
@@ -711,15 +853,14 @@ namespace TekkenTrainer
         private bool SHACancelRequirements(ulong MOVESET) // For Shin Akuma
         {
             // For removing requirements from cancels
-            int[,] arr = FindInReqList("AKUMA");
-            if (!RemoveRequirements(MOVESET, arr)) return false;
+            if (!RemoveRequirements(MOVESET, FindInReqList("AKUMA"))) return false;
 
             // For extra move properties
             // {MoveID, Extraprop index value to be assigned to it}
             int Mx_asyura = GetMoveID(MOVESET, "Mx_asyura\0", 1900);
             int Mx_asyura2 = GetMoveID(MOVESET, "Mx_asyura2\0", 1900);
             int Mx_asyurab = GetMoveID(MOVESET, "Mx_asyurab\0", 1900);
-            arr = new int[,]
+            int[,] arr = new int[,]
             {
                 {Mx_asyura,  GetMoveAttributeIndex(MOVESET, Mx_asyura + 2,  (int)Offsets.ext_prop_addr)},
                 {Mx_asyura2, GetMoveAttributeIndex(MOVESET, Mx_asyura2 + 2, (int)Offsets.ext_prop_addr)},
@@ -732,20 +873,28 @@ namespace TekkenTrainer
                 {GetMoveAttributeIndex(MOVESET, GetMoveID(MOVESET,"Mx_RageArtsL_n\0", 1900), (int)Offsets.cancel_addr) + 2, -1, 0, -1, -1, -1, -1, -1, -1}, // Cancel to Rage Art finish L -> Treasure RA
                 {GetMoveAttributeIndex(MOVESET, GetMoveID(MOVESET,"Mx_RageArtsR_n\0", 1900), (int)Offsets.cancel_addr) + 2, -1, 0, -1, -1, -1, -1, -1, -1}, // Cancel to Rage Art finish R -> Treasure RA
             };
-            
+
             // Updating cancel lists
             if (!Edit_Cancels(MOVESET, arr1, 0)) return false;
 
+            int Co_t_slk00 = GetMoveID(MOVESET, "Co_t_slk00\0", 1400);
             int Mx_EXrecover_7CS = GetMoveID(MOVESET, "Mx_EXrecover_7CS\0", 1900);
-            if (Mx_EXrecover_7CS < 0) return false;
+            if (Mx_EXrecover_7CS < 0 || Co_t_slk00 < 0) return false;
+
+            Cancel d34_Cancel1 = new Cancel(0x4000000C00000004, 0, 13, 1, 32767, 1, (short)Co_t_slk00, 80);
+            Cancel d34_Cancel2 = new Cancel(0x4000000C00000004, 0, 13, 1, 5, 1, (short)Co_t_slk00, 80);
+            FindCancelIndex(MOVESET, ref d34_Cancel1, 1, 490);
+            FindCancelIndex(MOVESET, ref d34_Cancel2, 1, 690);
+            d34_Cancel1.move_id = d34_Cancel2.move_id = (short)Mx_EXrecover_7CS;
 
             // Writing into group cancels
-            arr1 = new long[,]
+            Cancel[] cancels = 
             {
-                {588, -1, -1, -1, -1, -1, -1, Mx_EXrecover_7CS, -1}, // 583+5 - for d+3+4 meter charge
-                {768, -1, -1, -1, -1, -1, -1, Mx_EXrecover_7CS, -1}, // 763+5 - for d+3+4 meter charge
+                d34_Cancel1, d34_Cancel2
+                //{588, -1, -1, -1, -1, -1, -1, Mx_EXrecover_7CS, -1}, // 583+5 - for d+3+4 meter charge
+                //{768, -1, -1, -1, -1, -1, -1, Mx_EXrecover_7CS, -1}, // 763+5 - for d+3+4 meter charge
             };
-            if (!Edit_Cancels(MOVESET, arr1, 1)) return false;
+            if (!Edit_Cancels(MOVESET, cancels, 1)) return false;
 
             return true;  // This means the moveset has been modified successfully
         }
@@ -753,20 +902,7 @@ namespace TekkenTrainer
         private bool JINCancelRequirements(ulong MOVESET)    // Asura Jin requirements
         {
             // Editing requirements
-            int[,] reqs = new int[,]
-            {
-                {1100, 3}, // Zen into ETU
-		        {2230, 3}, // D+1+2 Slide (1)
-		        {2236, 3}, // D+1+2 Slide (2)
-		        {2252, 3}, // Slide Player forward (1)
-		        {2258, 3}, // Slide Player forward (2)
-		        {2279, 3}, // Slide Player forward during ULLRK
-		        {2306, 3}, // Slide Player forward during UEWHF
-		        {2342, 3}, // Slide Player forward during UETU
-		        {3418, 3}, // Intro
-		        {3423, 3}  // Outro
-            };
-            if (!RemoveRequirements(MOVESET, reqs)) return false;
+            if (!RemoveRequirements(MOVESET, FindInReqList("JIN"))) return false;
 
             int Co_Dummy_00 = GetMoveID(MOVESET, "Co_Dummy_00\0", 700);
             int Co_Dummy_00_cancel_idx = GetMoveAttributeIndex(MOVESET, Co_Dummy_00, (int)Offsets.cancel_addr);
@@ -859,7 +995,7 @@ namespace TekkenTrainer
 		        {GetMoveAttributeIndex(MOVESET, UEWHF, (int)Offsets.cancel_addr) + 5, 0x4000000200000040, 0, -1, 24, -1, -1, -1, 80},
 		        // Standing 4 cancel list
 		        {GetMoveAttributeIndex(MOVESET, standing4, (int)Offsets.cancel_addr), 0x4000000200000040, 0, 10, 1, 39, 39, Co_Dummy_00 + 8, 80},
-		        // For d/f+4,4 / 1,3 cancel list
+		        // For d/f+3,3 / 1,3 cancel list
 		        {ind4++, 0x4000000100000008, 0, -1, 1, -1, -1, -1, 80},
                 {ind4++, 0x4000000200000008, 0, -1, 1, -1, -1, -1, 80},
                 {ind4++, 0x4000000800000008, 0, -1, 1, -1, -1, -1, 80},
@@ -892,7 +1028,7 @@ namespace TekkenTrainer
 
             ind1 = Co_Dummy_00;  // ID of Co_Dummy_00 move
             ind2 = Co_Dummy_00_cancel_idx; // Cancel Index
-            reqs = new int[,]
+            int[,] arr = new int[,]
             {
                 {ind1++, ind2 + 0}, // {Co_Dummy_00 (841), 4210}
 		        {ind1++, ind2 + 2}, // {Co_Dymmy_02 (842), 4212}
@@ -905,7 +1041,7 @@ namespace TekkenTrainer
 		        {ind1++, ind2 +16}, // {Co_Dymmy_10 (849), 4224}
 		        {ind1++, ind2 +18}  // {Co_Dymmy_11 (850), 4226}
             };
-            if (!AssignMoveAttributeIndex(MOVESET, reqs, (int)OFFSETS.cancel_list)) return false;
+            if (!AssignMoveAttributeIndex(MOVESET, arr, (int)OFFSETS.cancel_list)) return false;
 
             return true; // Memory has been successfully modified
         }
@@ -914,13 +1050,7 @@ namespace TekkenTrainer
         {
             // For removing requirements from cancels
             // {RequirementIndex, how many requirements to zero}
-            int[,] arr = new int[,]
-            {
-                {24, 3},   // Juggle escape
-                {2043, 3}, // 1,1,2
-                {2532, 3}, // Intro
-                {2537, 3}, // Outro
-            };
+            List<Node> arr = FindInReqList("KAZUMI");
             if (!RemoveRequirements(MOVESET, arr)) return false;
 
             return true;  // This means the moveset has been modified successfully
@@ -950,7 +1080,13 @@ namespace TekkenTrainer
         {
             Checkboxes_checks(false);
             fileData.Clear();
-            requirements.Clear();
+            //requirements.Clear();
+            byte[] Org = { 0x4C, 0x8B, 0x6C, 0x24, 0x68 }; // mov r13, [rsp+68]
+            if (mem != null)
+            {
+                mem.WriteBytes(hud_icon_addr, Org);
+                mem.VirtualFreeMemory(AllocatedMem);
+            }
             Application.Exit();
         }
 
@@ -1039,34 +1175,46 @@ namespace TekkenTrainer
             else index = -1;
             return index;
         }
-        bool RemoveRequirements(ulong moveset, int[,] arr)
+        ulong GetMoveAttributeAddress(ulong moveset, int moveID, int offset)
+        {
+            if (moveID < 0) return 0;
+            ulong moves_addr = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.moves);
+            if (moves_addr == 0) return 0;
+            ulong moves_size = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.moves + 0x8);
+            if (moves_size == 0) return 0;
+            if ((ulong)moveID >= moves_size) return 0;
+            ulong addr = moves_addr + (ulong)(moveID * 0xB0);
+            ulong attr_addr = mem.ReadMemory<ulong>(addr + (ulong)offset);
+            return attr_addr;
+        }
+        bool RemoveRequirements(ulong moveset, List<Node> arr)
         {
             if (arr == null) return true;
             ulong requirements_addr = mem.ReadMemory<ulong>(moveset + 0x160);
             if (requirements_addr == 0) return false; // Return in case of null
             ulong addr, n_addr;
-            int rows = arr.GetLength(0);
+            int rows = arr.Count;
             // Removing requirements from the given array
             for (int i = 0; i < rows; i++)
             {
-                addr = requirements_addr + (8 * (ulong)arr[i,0]);
+                addr = requirements_addr + (8 * (ulong)arr[i].index);
                 // Writing and replacing the code to make the HUD comeback and stop AI from reverting Devil Transformation
-                if (arr[i,1] == 0 && GetCharID(moveset) == 9)
+                if (arr[i].value == 0 && GetCharID(moveset) == 9)
                 {
                     if (!mem.WriteMemory<int>(addr, 563)) return false;
                     if (!mem.WriteMemory<int>(addr + 16, 0x829D)) return false;
                     if (!mem.WriteMemory<int>(addr + 20, 1)) return false;
                 }
                 // Handling the requirements to allow Akuma's parry
-                else if (arr[i,1] == 0 && GetCharID(moveset) == 32)
+                else if (arr[i].value == 0 && GetCharID(moveset) == 32)
                 {
                     if (!mem.WriteMemory<int>(addr + 32, 0)) return false;
                     if (!mem.WriteMemory<int>(addr + 36, 0)) return false;
                     if (!mem.WriteMemory<int>(addr + 64, 0)) return false;
                     if (!mem.WriteMemory<int>(addr + 68, 0)) return false;
-                    arr[i, 1] = 3;
+                    arr[i].value = 3;
                 }
-                for (int j = 0; j < arr[i,1]; j++)
+                for (int j = 0; j < arr[i].value; j++)
                 {
                     n_addr = addr + (ulong)(8 * j);
                     if (!mem.WriteMemory<int>(n_addr, 0)) return false;
@@ -1075,7 +1223,7 @@ namespace TekkenTrainer
             return true;
         }
 
-        int FindReqIdx(ulong moveset, int[] arr)
+        int FindReqIdx(ulong moveset, int[] arr, int start = 0)
         {
             if (arr == null) return -1;
             if (arr.GetLength(0) % 2 != 0) return -1;
@@ -1083,34 +1231,42 @@ namespace TekkenTrainer
             if (requirements_addr == 0) return -1;
             int rows = mem.ReadMemory<int>(moveset + (int)OFFSETS.requirements + 8);
             if (rows == 0) return -1;
-            int n = arr.GetLength(0);
-            ulong addr = requirements_addr;
-            bool matched = false;
+            if (start < 0 || start > rows) start = 0;
+            int pat_size = arr.GetLength(0);
+            ulong addr;
+            int ind = -1;
             int value;
-            for (int i = 0; i < rows; i++)
+            rows = rows * 2 - pat_size;
+            for (int i = 0; i <= rows; i++)
             {
-                value = mem.ReadMemory<int>(addr);
-                if (value == arr[0])
+                int j;
+                // For current index i, check for pattern match
+                for (j = 0; j < pat_size; j++)
                 {
-                    matched = true;
-                    for (int j = 0; j < n; j++)
-                    {
-                        value = mem.ReadMemory<int>(addr);
-                        if (value != arr[j])
-                        {
-                            matched = false;
-                            break;
-                        }
-                        addr += 4;
-                    }
+                    // if (txt[i + j] != pat[j]) break
+                    addr = requirements_addr + (ulong)((i + j) * 4);
+                    value = mem.ReadMemory<int>(addr);
+                    if (value != arr[j]) break;
                 }
-                if (matched) break;
-                else addr += 4;
+                if (j == pat_size) // if pattern[0...M-1] = text[i, i+1, ...i+M-1]
+                    ind = i;
             }
-            if (!matched) return -1;
-            value = (int)((addr - requirements_addr) / 8);
-            Debug.WriteLine("Index = " + value.ToString());
-            return value;
+            ind = ind < 0 ? -1 : ind / 2;
+            //Debug.WriteLine("Index = " + ind.ToString());
+            return ind;
+        }
+
+        // Gets Move Name, based on given ID
+        string GetMoveName(ulong moveset, int ID)
+        {
+            ulong moves_addr = mem.ReadMemory<ulong>(moveset + 0x210);
+            if (moves_addr == 0) return string.Empty;
+            int size = mem.ReadMemory<int>(moveset + 0x218);
+            if (ID < 0 || ID >= size) return string.Empty;
+            ulong move_addr = moves_addr + (ulong)(0xB0 * ID);
+            ulong name_addr = mem.ReadMemory<ulong>(move_addr);
+            string name = mem.ReadMemoryString(name_addr, 30);
+            return name;
         }
 
         bool CopyMoves(ulong moveset, int[] arr, int Co_Dummy)
@@ -1124,7 +1280,7 @@ namespace TekkenTrainer
                 if (arr[i] < 0) return false;
                 FromMove = moves_addr + (ulong)(176 * arr[i]);
                 ToMove = moves_addr + (ulong)(176 * (Co_Dummy + i));
-                Debug.WriteLine(string.Format("{0:X}", ToMove));
+                //Debug.WriteLine(string.Format("{0:X}", ToMove));
                 for (int j = 0; j < 176 / 4; j++)
                 {
                     if (j * 4 == 32) continue;
@@ -1132,6 +1288,59 @@ namespace TekkenTrainer
                     //if (abc == 0) return false;
                     if (!mem.WriteMemory<int>(ToMove + (ulong)(j * 4), abc)) return false;
                 }
+            }
+            return true;
+        }
+
+        // FLAG Value 0 = Edit Normal cancels. Value 1 = Edit Group cancels
+        bool Edit_Cancels(ulong moveset, Cancel[] arr, int FLAG)
+        {
+            ulong cancel_addr, requirement, extradata;
+            if (FLAG == 0)
+            {
+                cancel_addr = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.cancel_list);
+                if (cancel_addr == 0) return false;
+            }
+            else
+            {
+                cancel_addr = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.group_cancel_list);
+                if (cancel_addr == 0) return false;
+            }
+            requirement = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.requirements);
+            if (requirement == 0) return false;
+            extradata = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.cancel_extra);
+            if (extradata == 0) return false;
+
+            ulong addr, req, ext;
+            int rows = arr.GetLength(0);
+            for (int i = 0; i < rows; i++)
+            {
+                // Reaching Address
+                addr = cancel_addr + (ulong)(arr[i].index * 40); // 1 cancel is of 40 bytes
+                // Command
+                if (arr[i].command != 0xFFFFFFFFFFFFFFFF)
+                    if (!mem.WriteMemory<ulong>(addr, arr[i].command)) return false;
+                // Requirement address
+                if (arr[i].requirement_idx != -1)
+                {
+                    req = requirement + (8 * (ulong)arr[i].requirement_idx); // 1 requirement field is of 8 bytes
+                    if (!mem.WriteMemory<ulong>(addr + 8, req)) return false;
+                }
+                // Extradata address
+                if (arr[i].extradata_idx != -1)
+                {
+                    ext = extradata + (4 * (ulong)arr[i].extradata_idx); // 1 Extradata field is of 4 bytes
+                    if (!mem.WriteMemory<ulong>(addr + 16, ext)) return false;
+                }
+                // Frame window start, end & starting frame
+                if (arr[i].frame_window_start != -1) if (!mem.WriteMemory<int>(addr + 24, arr[i].frame_window_start)) return false;
+                if (arr[i].frame_window_end != -1) if (!mem.WriteMemory<int>(addr + 28, arr[i].frame_window_end)) return false;
+                if (arr[i].starting_frame != -1) if (!mem.WriteMemory<int>(addr + 32, arr[i].starting_frame)) return false;
+
+                // Cancel move
+                if (arr[i].move_id != -1) if (!mem.WriteMemory<short>(addr + 36, arr[i].move_id)) return false;
+                // Cancel option
+                if (arr[i].type != -1) if (!mem.WriteMemory<short>(addr + 38, arr[i].type)) return false;
             }
             return true;
         }
@@ -1201,10 +1410,13 @@ namespace TekkenTrainer
             {
                 // Getting address of the move
                 addr = moves_addr + (ulong)(176 * arr[i,0]);
+                //idx = attribute + (ulong)(Sizes[offset] + arr[i, 1]);
+                //off = (ulong)offsets[offset];
+
                 // Getting address of the attribute
                 if (offset == (int)OFFSETS.cancel_list)
                 {
-                    idx = attribute + (ulong)(40 * arr[i,1]);
+                    idx = attribute + (ulong)(40 * arr[i, 1]);
                     off = (int)Offsets.cancel_addr;
                 }
                 else if (offset == (int)OFFSETS.extraprops)
@@ -1224,15 +1436,68 @@ namespace TekkenTrainer
             return true;
         }
 
-        bool HeihachiAura(ulong moveset, int index)
+        bool HeihachiAura(ulong moveset, ulong addr)
         {
-            ulong extraprops_addr = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.extraprops);
-            if (extraprops_addr == 0) return false;
-            ulong addr = extraprops_addr + (ulong)(12 * (index - 1));
-            if (!mem.WriteMemory<int>(addr + 0, 8001)) return false;
-            if (!mem.WriteMemory<int>(addr + 4, 0x829d)) return false;
-            if (!mem.WriteMemory<int>(addr + 8, 1)) return false;
+            if (addr == 0) return false;
+            if (!mem.WriteMemory<int>(addr - 12, 1)) return false;
+            if (!mem.WriteMemory<int>(addr - 8, 0x829d)) return false;
+            if (!mem.WriteMemory<int>(addr - 4, 1)) return false;
             return true;
+        }
+
+        // Function to find the index of a certain cancel. FLAG: 0 = Normal 1 = Group Cancels
+        int FindCancelIndex(ulong moveset, ref Cancel ToFind, int FLAG = 0, int start = 0)
+        {
+            if (FLAG < 0 || FLAG > 1) FLAG = 0;
+            ulong cancels_addr;
+            ulong requirement = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.requirements);
+            if (requirement == 0) return -1;
+            ulong extradata = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.cancel_extra);
+            if (extradata == 0) return -1;
+            int size;
+            cancels_addr = mem.ReadMemory<ulong>(moveset + (ulong)OFFSETS.cancel_list + (ulong)(FLAG * 0x10));
+            size = mem.ReadMemory<int>(moveset + (ulong)OFFSETS.cancel_list + 8 + (ulong)(FLAG * 0x10));
+            if (start < 0 || start >= size) start = 0;
+            Cancel Current = new Cancel();
+            ToFind.index = -1;
+            ulong addr;
+            for (int i = start; i < size; i++)
+            {
+                // Calculating Address
+                addr = cancels_addr + (ulong)(i * 40);
+                // Reading and storing attributes of a cancel
+                Current.command = mem.ReadMemory<ulong>(addr + 0x00);
+                Current.requirement_idx = GetAttributeIndex(mem.ReadMemory<ulong>(addr + 0x08), requirement, 8);
+                Current.extradata_idx = GetAttributeIndex(mem.ReadMemory<ulong>(addr + 0x10), extradata, 4);
+                Current.frame_window_start = mem.ReadMemory<int>(addr + 0x18);
+                Current.frame_window_end = mem.ReadMemory<int>(addr + 0x1C);
+                Current.starting_frame = mem.ReadMemory<int>(addr + 0x20);
+                Current.move_id = mem.ReadMemory<short>(addr + 0x24);
+                Current.type = mem.ReadMemory<short>(addr + 0x26);
+                // Making some options -1
+                Current.command = (ToFind.command == 0xFFFFFFFFFFFFFFFF) ? 0xFFFFFFFFFFFFFFFF : Current.command;
+                Current.requirement_idx = (ToFind.requirement_idx == -1) ? -1 : Current.requirement_idx;
+                Current.extradata_idx = (ToFind.extradata_idx == -1) ? -1 : Current.extradata_idx;
+                Current.frame_window_start = (ToFind.frame_window_start == -1) ? -1 : Current.frame_window_start;
+                Current.frame_window_end = (ToFind.frame_window_end == -1) ? -1 : Current.frame_window_end;
+                Current.starting_frame = (ToFind.starting_frame == -1) ? -1 : Current.starting_frame;
+                Current.move_id = (ToFind.move_id == -1) ? (short)(-1) : Current.move_id;
+                Current.type = (ToFind.type == -1) ? (short)(-1) : Current.type;
+                // Comparing this with stored cancel
+                if (Current == ToFind)
+                {
+                    ToFind.index = i;
+                    return i;
+                }
+            }
+            return -1;
+        }
+        
+        // Calculates index of an attribute if base address and size of that attribute is given
+        private int GetAttributeIndex(ulong addr, ulong base_address, int size)
+        {
+            if (addr == 0 || base_address == 0 || size == 0) return -1;
+            return (int)((addr - base_address) / (ulong)size);
         }
 
         private void Panels_Visibility(bool value)
@@ -1247,255 +1512,360 @@ namespace TekkenTrainer
         }
 
         ///////////////////// FILE HANDLING FUNCTIONS //////////////////////////
-        bool Parse(string str)
+        bool Parse(string input)
         {
-            int offsets = 0;
-            for (int i = 0; i < str.Length; i++)
-                if (str[i] == ',')
-                    offsets++;
-            if (offsets == 0) return false;
-            // Removing all white spaces
-            str = str.Trim(); // From beginning and end
-            str = String.Concat(str.Where(c => !Char.IsWhiteSpace(c))); // From middle
-            string val1 = str.Substring(0, str.IndexOf('='));
-            string remaining = str.Substring(str.IndexOf('=') + 1);
-            ulong[] offsetsList = new ulong[offsets];
-            string item;
-            for (int i = 0; i < offsets; i++)
+            if (input[0] == '#') return true;
+            string name;
+            ulong[] offsetsList = null;
+            try
             {
-                item = remaining.Substring(0, remaining.IndexOf(',')); // Reading an offset
-                item = item.Substring(item.IndexOf('x') + 1); // Removing 0x from the beginning
-                try { offsetsList[i] = UInt64.Parse(item, System.Globalization.NumberStyles.HexNumber); }
-                catch (Exception ex)
+                // Removing spaces
+                input = input.Trim(); // From beginning and end
+                input = String.Concat(input.Where(c => !Char.IsWhiteSpace(c))); // From middle
+
+                // Seperating Name and Visuals
+                name = input.Substring(0, input.IndexOf('='));
+                input = input.Substring(input.IndexOf("=") + 1);
+
+                // Parsing strings based on commas
+                string[] offsets = input.Split(',');
+                if (offsets[0] == "")
                 {
-                    if (ex.HResult == -2146233033)
-                        return false;
-                    else throw ex;
+                    MessageBox.Show($"Address for {name} Not Present!\n");
+                    return false;
                 }
-                remaining = remaining.Substring(remaining.IndexOf(',') + 1);
+
+                // Processing these arguements
+                int len = offsets.Length;
+                offsetsList = new ulong[len];
+                for (int i = 0; i < len; i++)
+                {
+                    offsets[i] = offsets[i].Substring(offsets[i].IndexOf('x') + 1);
+                    offsetsList[i] = UInt64.Parse(offsets[i], System.Globalization.NumberStyles.HexNumber);
+                }
             }
-            fileData.Add(new Node(val1, offsetsList));
+            catch (Exception ex)
+            {
+                if ((uint)ex.HResult == 0x80131502)
+                {
+                    Debug.WriteLine("IndexOf() function returned -1");
+                    return false;
+                }
+                else throw ex;
+            }
+            fileData.Add(new File_Item(name, offsetsList));
             return true;
         }
+
+        bool Parse(string input, ref List<Node> list)
+        {
+            if (input[0] == '#') return true;
+            if (input == "") return true;
+            int index, value;
+            int idx = input.IndexOf('#');
+            if (idx != -1) input = input.Substring(0, idx);
+            try
+            {
+                // Removing spaces
+                input = input.Trim(); // From beginning and end
+                input = String.Concat(input.Where(c => !Char.IsWhiteSpace(c))); // From middle
+
+                // Seperating and Parsing Index and Count
+                idx = input.IndexOf(',');
+                if (idx == -1) return false;
+                index = Int32.Parse(input.Substring(0, idx));
+                value = Int32.Parse(input.Substring(idx + 1));
+
+                //Console.WriteLine($"{index}, {value}");
+                list.Add(new Node(index, value));
+            }
+            catch (Exception ex)
+            {
+                if ((uint)ex.HResult == 0x80131502)
+                {
+                    Console.WriteLine("IndexOf() function returned -1");
+                    Console.ReadKey();
+                    return false;
+                }
+                else throw ex;
+            }
+            //Console.WriteLine(input);
+            return true;
+        }
+
         void ReadAddressesFromFile()
         {
-            bool Error = false;
-            string fileName = "addresses.txt";
-            if (!File.Exists(fileName))
+            string[] text;
+            try
             {
-                MessageBox.Show("Could not find and open the following file: addresses.txt\nClosing Program.");
-                CloseProgram();
+                text = File.ReadAllLines("addresses.txt");
+            }
+            catch (Exception ex)
+            {
+                if ((uint)ex.HResult == 0x80070002)
+                {
+                    return;
+                }
+                else throw ex;
+            }
+            if (text.Length == 0)
+            {
                 return;
             }
-            FileStream fs = new FileStream(fileName, FileMode.Open);
-            StreamReader sr = new StreamReader(fs);
-            sr.BaseStream.Seek(0, SeekOrigin.Begin);
-            string str = "abc"; // Putting in random stuff so the string does not get cucked
-            while (str != null)
+            foreach (string t in text)
             {
-                str = sr.ReadLine();
-                if (str == null) break;
-                if (!Parse(str))
+                if (!Parse(t))
                 {
                     MessageBox.Show("Invalid Data written in the file: addresses.txt\nClosing Program.");
-                    CloseProgram(); sr.Close(); fs.Close();
+                    CloseProgram();
                     return;
                 }
             }
-            sr.Close();
-            fs.Close();
 
-            fileName = "requirements.txt";
-            if (!File.Exists(fileName))
+            string[] Names = { "JIN", "HEIHACHI", "KAZUYA", "KAZUMI", "AKUMA" };
+            string path = "Requirements/";
+            try
             {
-                MessageBox.Show("Could not find and open the following file: requirements.txt\nClosing Program.");
-                CloseProgram();
-                return;
-            }
-            fs = new FileStream(fileName, FileMode.Open);
-            sr = new StreamReader(fs);
-            sr.BaseStream.Seek(0, SeekOrigin.Begin);
-            str = "abc"; // Putting in random stuff so the string does not get cucked
-            int slash; // Stores index for the '/' in the string
-            string charName;
-            List<Node2> list = new List<Node2>();
-            bool Write = false;
-            while (str != null)
-            {
-                str = sr.ReadLine();
-                if (str == null) break;
-                if (str == string.Empty) continue;
-                if (str[0] == '/') continue;
-                slash = str.IndexOf('/');
-                if (slash != -1) str = str.Substring(0, slash);
-                str = str.Trim();
-                str = String.Concat(str.Where(c => !Char.IsWhiteSpace(c)));
-                // PARSING STRING
-                if (Char.IsLetter(str[0]))
+                for (int i = 0; i < 5; i++)
                 {
-                    charName = str; // Storing Name of the character
-                    if (str.CompareTo("JIN") == 0)
+                    requirements[i] = new Req_Item(Names[i]);
+                    text = File.ReadAllLines(path + Names[i] + ".txt");
+                    if (text.Length == 0)
                     {
-                        Write = true;
-                    }
-                    else if (str.CompareTo("HEIHACHI") == 0)
-                    {
-                        Write = true;
-                    }
-                    else if (str.CompareTo("KAZUYA") == 0)
-                    {
-                        Write = true;
-                    }
-                    else if (str.CompareTo("KAZUMI") == 0)
-                    {
-                        Write = true;
-                    }
-                    else if (str.CompareTo("AKUMA") == 0)
-                    {
-                        Write = true;
-                    }
-                    else
-                    {
-                        MessageBox.Show("Invalid character label written in the file: requirements.txt\nClosing Program.");
-                        CloseProgram(); sr.Close(); fs.Close(); Write = false;
                         return;
                     }
-
-                    if (Write)
+                    List<Node> list = new List<Node>();
+                    foreach (string t in text)
                     {
-                        requirements.Add(new Reqs(charName, ToArray(list)));
-                        int[,] req_list = FindInReqList(charName);
-                        if (req_list != null)
-                        {
-                            //Debug.WriteLine(charName);
-                            //for (int i = 0; i < req_list.GetLength(0); i++)
-                            //    Debug.WriteLine(req_list[i, 0].ToString() + ", " + req_list[i, 1].ToString());
-                        }
-                        else
-                        {
-                            //MessageBox.Show("Could not read any requirements from the file: requirements.txt\nClosing Program.");
-                            //CloseProgram(); sr.Close(); fs.Close();
-                            //return;
-                        }
-                        list.Clear();
+                        Parse(t, ref list);
                     }
-                }
-                else // Reading a requirement
-                {
-                    if (!Char.IsDigit(str[0]))
-                    {
-                        MessageBox.Show("Invalid Index value written in the file: requirements.txt\nClosing Program.");
-                        CloseProgram(); sr.Close(); fs.Close();
-                        return;
-                    }
-                    // Reading requirements
-                    string index, value;
-                    int idx, val;
-                    if (str.IndexOf(',') != -1)
-                    {
-                        index = str.Substring(0, str.IndexOf(','));
-                        value = str.Substring(str.IndexOf(',') + 1);
-
-                        try { idx = Int32.Parse(index); }
-                        catch (Exception ex)
-                        {
-                            if (ex.HResult == -2146233033)
-                            {
-                                MessageBox.Show("Error occured when parsing index values from the file: requirements.txt\nClosing Program.");
-                                CloseProgram(); sr.Close(); fs.Close();
-                                return;
-                            }
-                            else throw ex;
-                        }
-
-                        try { val = Int32.Parse(value); }
-                        catch (Exception ex)
-                        {
-                            if (ex.HResult == -2146233033)
-                            {
-                                MessageBox.Show("Error occured when parsing index values from the file: requirements.txt\nClosing Program.");
-                                CloseProgram(); sr.Close(); fs.Close();
-                                return;
-                            }
-                            else throw ex;
-                        }
-
-                        list.Add(new Node2(idx, val));
-                    }
-                    else
-                    {
-                        MessageBox.Show("Invalid Data written in the file: requirements.txt\nClosing Program.");
-                        CloseProgram(); sr.Close(); fs.Close();
-                        return;
-                    }
+                    requirements[i].ptr = list;
                 }
             }
-            if (FindNameInReqList("JIN") == null) { Error = true; charName = "JIN"; }
-            else if (FindNameInReqList("HEIHACHI") == null) { Error = true; charName = "HEIHACHI"; }
-            else if (FindNameInReqList("KAZUYA") == null) { Error = true; charName = "KAZUYA"; }
-            else if (FindNameInReqList("KAZUMI") == null) { Error = true; charName = "KAZUMI"; }
-            else if (FindNameInReqList("AKUMA") == null) { Error = true; charName = "AKUMA"; }
-            else { Error = false; charName = "NO ERROR"; }
-            if (Error)
+            catch (Exception ex)
             {
-                MessageBox.Show($"Could not read requirements for {charName} from file: requirements.txt\nClosing Program.");
-                CloseProgram();
+                int result = ex.HResult;
+                if ((uint)result == 0x80070002 || (uint)result == 0x80070003)
+                {
+                    return;
+                }
+                else throw ex;
             }
-            sr.Close();
-            fs.Close();
         }
-        private int[,] ToArray(List<Node2> list)
-        {
-            int size = list.Count;
-            if (size <= 0) return null;
-            int[,] arr = new int[size, 2];
-            for(int i = 0; i < size; i++)
-            {
-                arr[i, 0] = list[i].index;
-                arr[i, 1] = list[i].value;
-            }
-            return arr;
-        }
+
         private ulong[] FindInList(string name)
         {
-            foreach (Node a in fileData)
+            foreach (File_Item a in fileData)
             {
                 if (a.name == name) return a.ptr;
             }
             return null;
         }
 
-        private int[,] FindInReqList(string name)
+        private List<Node> FindInReqList(string name)
         {
-            foreach (Reqs a in requirements)
+            foreach (Req_Item a in requirements)
             {
                 if (a.name == name) return a.ptr;
             }
             return null;
         }
-        private string FindNameInReqList(string name)
-        {
-            foreach (Reqs a in requirements)
-            {
-                if (a.name == name) return a.name;
-            }
-            return null;
-        }
 
-        private int FindIndInList(string name, int v)
+        private int FindIndexInList(string name, int v)
         {
             if (v >= 0) return -1;
-            foreach (Reqs a in requirements)
+            foreach (Req_Item a in requirements)
             {
                 if (a.name == name)
                 {
-                    int size = a.ptr.GetLength(0);
+                    int size = a.ptr.Count;
                     for(int i = 0; i < size; i++)
-                        if (a.ptr[i, 1] == v)
-                            return a.ptr[i, 0];
+                        if (a.ptr[i].value == v)
+                            return a.ptr[i].index;
                 }
             }
             return -1;
+        }
+
+        private bool CreateCodeCave()
+        {
+            if (hud_icon_addr == 0)
+            {
+                AppendTextBox("Code Cave Address Not Present\r\n");
+                return false;
+            }
+            // Checking if given instruction address is the right one.
+            BYTES_READ = mem.ReadMemoryBytes(hud_icon_addr, 5);
+            for (int i = 0; i < 5; i++)
+                if (BYTES_READ[i] != ORG_INST[i])
+                {
+                    AppendTextBox("Provided address for code cave is wrong, no code cave created\r\n");
+                    return false;
+                }
+            int cave_size = 1024;
+            AllocatedMem = mem.VirtualAllocate(cave_size);
+            if (AllocatedMem == 0)
+            {
+                AppendTextBox("Failed to create code cave to load HUD icons\r\n");
+                return false;
+            }
+            /////////////////////////////////////////////////////
+            // CREATING JMP INSTRUCTION FOR OUR CREATED CODE CAVE
+            const int Jmp_size = 5;
+            int Jmp_val = (int)(AllocatedMem - hud_icon_addr - 5);
+            byte[] jmp_addr = BitConverter.GetBytes(Jmp_val);
+            byte[] jmp_inst = new byte[Jmp_size]
+            {
+                0xE9, jmp_addr[0], jmp_addr[1], jmp_addr[2], jmp_addr[3]
+            };
+
+            // WRITING JUMP INSTRUCTION IN THE GAME'S MEMORY
+            if (!mem.WriteBytes(hud_icon_addr, jmp_inst))
+            {
+                AppendTextBox("Failed to create code cave to load HUD icons\r\n");
+                mem.VirtualFreeMemory(AllocatedMem);
+                return false;
+            }
+
+            // FILLING IN THE CODE CAVE FOR ALLOCATED REGION
+            int code_size = 0;
+            byte[] cave = HUD_ICON_CODE_CAVE(ref code_size);
+            if (cave == null)
+            {
+                AppendTextBox("Failed to create code cave to load HUD icons\r\n");
+                mem.VirtualFreeMemory(AllocatedMem);
+                return false;
+            }
+
+            /////////////////////////////////////////////////////
+            // CREATING RETURNING JUMP
+            /////////////////////////////////////////////////////
+            // Return address calculations:
+            // index = cave_size - 3 - 1
+            // addr = allocated_memory_addr + index
+            // return_addr = original - addr + 5
+            int index = code_size - 3 - 1;
+            int return_offset = (int)(hud_icon_addr - (AllocatedMem + Convert.ToUInt64(index)) + 1); // Here comes +1
+            byte[] jmp_back = BitConverter.GetBytes(return_offset);
+            for (int i = 0; i < 4; i++) cave[index + i] = jmp_back[i];
+            /////////////////////////////////////////////////////
+            // WRITING CODE CAVE INTO MEMORY
+            if (!mem.WriteBytes(AllocatedMem, cave))
+            {
+                AppendTextBox("Failed to create code cave to load HUD icons\r\n");
+                mem.VirtualFreeMemory(AllocatedMem);
+                return false;
+            }
+            AppendTextBox("Created Code Cave to load HUD Icons\r\n");
+            return true;
+        }
+
+        private byte[] HUD_ICON_CODE_CAVE(ref int code_size)
+        {
+            byte[] D = BitConverter.GetBytes(AllocatedMem + 0x157);
+            const int size = 619; // 619
+            code_size = size;
+            byte[] ptr = new byte[size]
+            {
+		        // newmem:
+		        0x49, 0x83, 0xfc, 0x4c, 									// cmp r12,'L'
+		        0x0f, 0x84, 0x07, 0x00, 0x00, 0x00, 						// je begin
+		        0x48, 0x81, 0xc6, 0x10, 0x06, 0x00, 0x00, 					// add rsi,0x610
+		        // begin:
+		        0x66, 0x83, 0x3c, 0x24, 0x08, 								// cmp word ptr[rsp],8
+		        0x0f, 0x84, 0x10, 0x00, 0x00, 0x00, 						// je heihachi
+		        0x66, 0x83, 0x3c, 0x24, 0x09, 								// cmp word ptr[rsp],9
+		        0x0f, 0x84, 0x44, 0x00, 0x00, 0x00, 						// je kazuya
+		        0xe9, 0x35, 0x02, 0x00, 0x00, 								// jmp code
+		        // heihachi:
+		        0x41, 0x57, 												// push r15
+		        0x41, 0x56, 												// push r14
+		        0x41, 0x55, 												// push r13
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x02,					// cmp [rsi+BC],2
+		        0x0f, 0x84, 0xa9, 0x00, 0x00, 0x00, 						// je regular_gi
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x04, 					// cmp [rsi+BC],4
+		        0x0f, 0x84, 0x8d, 0x00, 0x00, 0x00, 						// je final_form
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x0a, 					// cmp [rsi+BC],10
+		        0x0f, 0x84, 0x71, 0x00, 0x00, 0x00, 						// je mafia_suit
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x0e, 					// cmp [rsi+BC],14
+		        0x0f, 0x84, 0x73, 0x00, 0x00, 0x00, 						// je final_form
+		        0xe9, 0xe1, 0x00, 0x00, 0x00, 								// jmp label1
+		        // kazuya:
+		        0x41, 0x57, 												// push r15
+		        0x41, 0x56, 												// push r14
+		        0x41, 0x55, 												// push r13
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x04, 					// cmp [rsi+BC],4
+		        0x0f, 0x84, 0x2e, 0x00, 0x00, 0x00, 						// je final_devil
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x07, 					// cmp [rsi+BC],7
+		        0x0f, 0x84, 0x12, 0x00, 0x00, 0x00, 						// je gcorp
+		        0x83, 0xbe, 0xbc, 0x00, 0x00, 0x00, 0x0b, 					// cmp [rsi+BC],11
+		        0x0f, 0x84, 0x23, 0x00, 0x00, 0x00, 						// je tk7_dougi
+		        0xe9, 0xaf, 0x00, 0x00, 0x00, 								// jmp label1
+		        // gcorp:
+		        0x49, 0xbf, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,1
+		        0xe9, 0x4b, 0x00, 0x00, 0x00, 								// jmp loop_prep
+		        // final_devil:
+		        0x49, 0xbf, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,2
+		        0xe9, 0x3c, 0x00, 0x00, 0x00, 								// jmp loop_prep
+		        // tk7_dougi:
+		        0x49, 0xbf, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,3
+		        0xe9, 0x2d, 0x00, 0x00, 0x00,  								// jmp loop_prep
+		        // mafia_suit:
+		        0x49, 0xbf, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,4
+		        0xe9, 0x1e, 0x00, 0x00, 0x00,  								// jmp loop_prep
+		        // final_form:
+		        0x49, 0xbf, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,5
+		        0xe9, 0x0f, 0x00, 0x00, 0x00,  								// jmp loop_prep
+		        // regular_gi:
+		        0x49, 0xbf, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r15,6
+		        0xe9, 0x00, 0x00, 0x00, 0x00,  								// jmp loop_prep
+		        // loop_prep:
+		        0x49, 0xbd, D[0], D[1], D[2], D[3], D[4], D[5], D[6], D[7], // mov r13,hud_icons 
+		        // label2:
+		        0x49, 0x83, 0xc5, 0x26, 									// add r13,0x26
+		        0x49, 0xff, 0xcf, 											// dec r15
+		        0x49, 0x83, 0xff, 0x00, 									// cmp r15,0
+		        0x75, 0xf3, 												// jne label2 (add r13, 0x26) LOOPING BACK
+		        0x49, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r14,0
+		        // loop1:
+		        0x45, 0x8a, 0x7d, 0x00, 									// mov r15l,[r13]
+		        0x46, 0x88, 0x7c, 0x35, 0x34, 								// mov [rbp+r14+0x34],r15l
+		        0x49, 0xff, 0xc6, 											// inc r14
+		        0x49, 0xff, 0xc5, 											// inc r13
+		        0x49, 0x83, 0xfe, 0x26, 									// cmp r14,38
+		        0x0f, 0x84, 0x02, 0x00, 0x00, 0x00,							// je label0 (2 addresses below) 
+		        0xeb, 0xe5, 												// jmp loop1 (-27)
+		        // label0:
+		        0x44, 0x88, 0x65, 0x32, 									// mov [rbp+0x32],r12l
+		        0x44, 0x88, 0x65, 0x4c, 									// mov [rbp+0x4C],r12l
+		        0x49, 0x83, 0xfc, 0x4c,										// cmp r12,'L' 
+		        0x0f, 0x84, 0x07, 0x00, 0x00, 0x00, 						// je label1 (+7)
+		        0x48, 0x81, 0xee, 0x10, 0x06, 0x00, 0x00, 					// sub rsi,0x610
+		        // label1:
+		        0x41, 0x5d, 												// pop r13
+		        0x41, 0x5e, 												// pop r14 
+		        0x41, 0x5f, 												// pop r15 
+		        0xe9, 0x0a, 0x01, 0x00, 0x00, 								// jmp code (+266)
+		        // hud_icons:
+		        // "KAZ_Story_1.HUD_CH_ICON_L_KAZ_Story_1"
+		        0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x31, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x31, 0x00, 
+		        // "KAZ_Story_2.HUD_CH_ICON_L_KAZ_Story_2"
+		        0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x32, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x32, 0x00, 
+		        // "KAZ_Story_6.HUD_CH_ICON_L_KAZ_Story_5"
+		        0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x35, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x35, 0x00, 
+		        // "KAZ_Story_5.HUD_CH_ICON_L_KAZ_Story_6"
+		        0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x36, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x4b, 0x41, 0x5a, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x36, 0x00, 
+		        //	"HEI_Story_1.HUD_CH_ICON_L_HEI_Story_1"
+		        0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x31, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x31, 0x00, 
+		        //	"HEI_Story_2.HUD_CH_ICON_L_HEI_Story_2"
+		        0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x32, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x32, 0x00, 
+		        //	"HEI_Story_3.HUD_CH_ICON_L_HEI_Story_3"
+		        0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x33, 0x2e, 0x48, 0x55, 0x44, 0x5f, 0x43, 0x48, 0x5f, 0x49, 0x43, 0x4f, 0x4e, 0x5f, 0x4c, 0x5f, 0x48, 0x45, 0x49, 0x5f, 0x53, 0x74, 0x6f, 0x72, 0x79, 0x5f, 0x33, 0x00, 
+		        // code:
+		        0x4c, 0x8b, 0x6c, 0x24, 0x68, 								// mov r13,[rsp+68]
+		        0xe9, 0xea, 0xfd, 0x4c, 0x00                                // jmp [return_address]
+            };
+            return ptr;
         }
     }
 }
